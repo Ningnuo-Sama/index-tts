@@ -173,11 +173,17 @@ class IndexTTS2:
             w2v_bert_dir = aux_paths["w2v_bert"]
         self.extract_features = SeamlessM4TFeatureExtractor.from_pretrained(w2v_bert_dir, local_files_only=True)
         self.semantic_model = Wav2Vec2BertModel.from_pretrained(w2v_bert_dir, local_files_only=True)
-        self.semantic_model = self.semantic_model.to(self.device)
+        # 本地扩展：允许把 w2v-bert 特征提取器单独放 CPU（省约 2 GB 显存）。
+        # 触发方式：环境变量 INDEXTTS_SEMANTIC_DEVICE=cpu。默认跟随主设备，保持上游行为。
+        _sem_dev = os.environ.get("INDEXTTS_SEMANTIC_DEVICE", "").strip()
+        self.semantic_device = torch.device(_sem_dev) if _sem_dev else self.device
+        self.semantic_model = self.semantic_model.to(self.semantic_device)
         self.semantic_model.eval()
+        if str(self.semantic_device) != str(self.device):
+            print(f">> w2v-bert feature extractor placed on {self.semantic_device} (main device {self.device})")
         stat_mean_var = torch.load(os.path.join(self.model_dir, self.cfg.w2v_stat))
-        self.semantic_mean = stat_mean_var["mean"].to(self.device)
-        self.semantic_std = torch.sqrt(stat_mean_var["var"]).to(self.device)
+        self.semantic_mean = stat_mean_var["mean"].to(self.semantic_device)
+        self.semantic_std = torch.sqrt(stat_mean_var["var"]).to(self.semantic_device)
 
         start_time = time.perf_counter()
         self.semantic_codec = EnhancedCodec(**self.cfg.semantic_codec, cfg=self.cfg.semantic_codec)
@@ -280,6 +286,10 @@ class IndexTTS2:
 
     @torch.no_grad()
     def get_emb(self, input_features, attention_mask):
+        # 本地扩展：支持 w2v-bert 与主模型分处不同设备（把输入搬过去、结果搬回来）
+        if str(self.semantic_device) != str(self.device):
+            input_features = input_features.to(self.semantic_device)
+            attention_mask = attention_mask.to(self.semantic_device)
         vq_emb = self.semantic_model(
             input_features=input_features,
             attention_mask=attention_mask,
@@ -287,6 +297,8 @@ class IndexTTS2:
         )
         feat = vq_emb.hidden_states[17]  # (B, T, C)
         feat = (feat - self.semantic_mean) / self.semantic_std
+        if str(self.semantic_device) != str(self.device):
+            feat = feat.to(self.device)
         return feat
 
     @torch.no_grad()
