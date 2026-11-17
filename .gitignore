@@ -36,3 +36,8 @@ desktop.ini
 
 .claude
 .memsearch
+
+# 本地部署产物与用户素材（2026-11-17 起，不进版本库）
+/voices/
+/scratch/
+/checkpoints/config.yaml
